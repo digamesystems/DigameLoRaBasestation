@@ -1,4 +1,4 @@
-/* esp_lora_basestation
+/* DigameLoRaBaseStation
  *  
  *  A simple LoRa listener for events from our Vehicle Counters. 
  *  Builds up a JSON message for each event and routes them our server 
@@ -7,7 +7,7 @@
  *  The program provides a web interface for configuration of LoRa
  *  and WiFi parameters.
  *  
- *  Copyright 2021, Digame systems. All rights reserved. 
+ *  Copyright 2022, Digame systems. All rights reserved. 
  */
  
 
@@ -22,7 +22,8 @@ long count = 0;
 //for Over-the-Air updates...
 #include <WiFi.h>
 
-#include <digameVersion.h>
+#include <digameDebug.h>
+#include "digameVersion.h"
 
 #include <CircularBuffer.h>   // Adafruit library. Pretty small!
 #include <ArduinoJson.h>      // 
