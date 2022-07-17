@@ -1,45 +1,57 @@
 <!DOCTYPE HTML><html>
-<head> 
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <link rel="stylesheet" type="text/css" href="style.css">
-  <link rel="shortcut icon" href="favicon.ico"/>
-  <link rel="icon"  type="image/ico" href="favicon.ico">
-  <title>%config.deviceName% - (base station)</title>
-</head>
+  <head> 
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
+      
+    <link rel="stylesheet" type="text/css" href="style.css">
+    <link rel="shortcut icon" href="favicon.ico"/>
+    <link rel="icon"  type="image/ico" href="favicon.ico">
+    <title>%config.deviceName% - (counter)</title>
+  </head>
 
 <body>
 
-    <h1>HEIMDALL VCS</h1><br>
+    <h1>HEIMDALL</h1><br>
     <h3><em>A Next-Generation Traffic Counting Platform</em></h3>
     <h3><em>from D&#237game Systems</em></h3> 
     <hr>
     <br>
 
     <h2>LoRa-WiFi Base Station<br><em> %config.deviceName% </em></h2>
-    <p>Welcome. You can use these forms to update system parameters for this LoRa-WiFi base station.</p>
 
+    <form>
+      <p>Welcome. You can use these forms to update system parameters for this LoRa-WiFi base station.</p>
+    </form>
+    
     <form>
       <H3>Sensor Data</H3>
       <br>
       <table >      
-        <thead><th style="width:180px">Name</th><th style="width:150px">Events</th></thead>
+        <thead><th style="width:180px">Name</th><th style="width:150px">Lane 1</th><th style="width:150px">Lane 2</th></thead>
         <tbody>    
           <tr>
             <td><em>%config.sens1Name%</em></td>
-            <td><span id="sens1count">%str1Count%</span></td>
+            <td><span id="sens1count1">%str1Count%</span></td>
+            <td><span id="sens1count2">%str1Count%</span></td>
+            
           </tr>
           <tr>
             <td><em>%config.sens2Name%</em></td>
-            <td><span id="sens2count">%str2Count%</span></td>
+            <td><span id="sens2count1">%str2Count%</span></td>
+            <td><span id="sens2count2">%str2Count%</span></td>
           </tr>
           <tr>
             <td><em>%config.sens3Name%</em></td>
-            <td><span id="sens3count">%str3Count%</span></td>
+            <td><span id="sens3count1">%str3Count%</span></td>
+            <td><span id="sens2count2">%str3Count%</span></td>
           </tr>
           <tr>
             <td><em>%config.sens4Name%</em></td>
-            <td><span id="sens4count">%str4Count%</span></td>
+            <td><span id="sens4count1">%str4Count%</span></td>
+            <td><span id="sens2count2">%str4Count%</span></td>
           </tr>
         </tbody>
       </table>
@@ -78,7 +90,7 @@
         <p><em>NOTE: Changes to network settings will be applied after a reboot of the device.</em></p>
         <label>MAC Address</label><p><small><em>%MAC_ADDRESS%</em></small></p><br>
         
-        <label for="ssid">Heartbeat Int'val (sec)</label>
+        <label for="ssid">Heartbeat Rate (sec)</label>
         <input type="number" min="10" max="65534" id="heartbeatinterval" name="heartbeatinterval" value=%config.heartbeatInterval%><br><br>            
 
         <label for="ssid">SSID</label>
@@ -123,34 +135,30 @@
   
     <form action="/sensors">
       <H3>Sensor Definitions</H3>
-      <p><em>A base station can support up to four (4) traffic counters. Each counter needs a unique LoRa address to communicate. The MAC address for the counter can be found on the label on the back of the sensor.</em></p>
+      <p><em>A base station can support up to four (4) traffic counters. Each counter should have a unique LoRa address to avoid communication errors.</em></p>
       
       <table>      
-      <thead><th>Name</th><th>Adr</th><th>MAC Address</th></thead>
+      <thead><th>Name</th><th>Addr</th></thead>
       <tbody>
       
       <tr>
       <td><input type="text" id="sens1name" name="sens1name" value="%config.sens1Name%"></td>
-      <td><input class="narrow" type="number" min="10" max="99" id="sens1addr" name="sens1addr" value=%config.sens1Addr%></td>
-      <td><input type="text" id="sens1mac" name="sens1mac" value="%config.sens1MAC%"></td>
+      <td><input style="width: 3em" type="number" min="10" max="99" id="sens1addr" name="sens1addr" value=%config.sens1Addr%></td>
       </tr>
 
       <tr>
       <td><input type="text" id="sens2name" name="sens2name" value="%config.sens2Name%"></td>
-      <td><input class="narrow" type="number" min="10" max="99" id="sens2addr" name="sens2addr" value="%config.sens2Addr%"></td>
-      <td><input type="text" id="sens2mac" name="sens2mac" value="%config.sens2MAC%"></td>
-      </tr>
+      <td><input style="width: 3em" type="number" min="10" max="99" id="sens2addr" name="sens2addr" value="%config.sens2Addr%"></td>
+       </tr>
 
       <tr>
       <td><input type="text" id="sens3name" name="sens3name" value="%config.sens3Name%"></td>
-      <td><input class="narrow" type="number" min="10" max="99" id="sens3addr" name="sens3addr" value="%config.sens3Addr%"></td>
-      <td><input type="text" id="sens3mac" name="sens3mac" value="%config.sens3MAC%"></td>
-      </tr>
+      <td><input style="width: 3em" type="number" min="10" max="99" id="sens3addr" name="sens3addr" value="%config.sens3Addr%"></td>
+       </tr>
 
       <tr>
       <td><input type="text" id="sens4name" name="sens4name" value="%config.sens4Name%"></td>
-      <td><input class="narrow" type="number" min="10" max="99" id="sens4addr" name="sens4addr" value="%config.sens4Addr%"></td>
-      <td><input type="text" id="sens4mac" name="sens4mac" value="%config.sens4MAC%"></td>
+      <td><input style="width: 3em" type="number" min="10" max="99" id="sens4addr" name="sens4addr" value="%config.sens4Addr%"></td>
       </tr>          
 
       </tbody>
@@ -185,12 +193,19 @@
           c2 = parseFloat(items[1]);
           c3 = parseFloat(items[2]);
           c4 = parseFloat(items[3]);
+          c5 = parseFloat(items[4]);
+          c6 = parseFloat(items[5]);
+          c7 = parseFloat(items[6]);
+          c8 = parseFloat(items[7]);
           
-          document.getElementById("sens1count").innerHTML = c1;
-          document.getElementById("sens2count").innerHTML = c2;
-          document.getElementById("sens3count").innerHTML = c3;
-          document.getElementById("sens4count").innerHTML = c4;
-            
+          document.getElementById("sens1count1").innerHTML = c1;
+          document.getElementById("sens2count1").innerHTML = c2;
+          document.getElementById("sens3count1").innerHTML = c3;
+          document.getElementById("sens4count1").innerHTML = c4;
+          document.getElementById("sens1count2").innerHTML = c5;
+          document.getElementById("sens2count2").innerHTML = c6;
+          document.getElementById("sens3count2").innerHTML = c7;
+          document.getElementById("sens4count2").innerHTML = c8;  
         };}
       xhttp.open("GET", "/counters", true);
       xhttp.send();

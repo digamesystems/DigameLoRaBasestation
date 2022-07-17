@@ -12,40 +12,43 @@
  
 
 #define USE_LORA true
-String model = "DS-STN-LoRa-WiFi-1";
-String model_description= "(LoRa-WiFi Base Station)";  
+String model             = "DS-STN-LoRa-WiFi-1";
+String model_description = "(LoRa-WiFi Base Station)";  
 
-  
 bool showDataStream = false;
-long count = 0;
 
 //for Over-the-Air updates...
 #include <WiFi.h>
 
+#include <ArduinoJson.h>   
+#include <CircularBuffer.h>   // Adafruit library. Pretty small!
+
+
 #include <digameDebug.h>
 #include "digameVersion.h"
-
-#include <CircularBuffer.h>   // Adafruit library. Pretty small!
-#include <ArduinoJson.h>      // 
-
 #include <digameJSONConfig.h> // Program parameters from config file on SD card
+Config config;                // Singleton data structure of program parameters (defined in digameJSONConfig.h)
+                              //   used by most Digame libraries.
 #include <digameTime.h>       // Time Functions - RTC, NTP Synch etc
 #include <digameNetwork.h>    // Network Functions - Login, MAC addr
 #include <digamePowerMgt.h>   // Power management modes 
 #include <digameDisplay.h>    // eInk Display Functions
 #include <digameLoRa.h>       // Reyax LoRa module control functions
-
 #include <digameCounterWebServer.h>  // Handles parmater tweaks through a web page
 
 #define debugUART Serial
 #define CTR_RESET 32          // Reset Button Input
 
+// We have 3 different displays in the UI
+#define SPLASH 1   // Splash screen
+#define NETWORK 2  // Base station IP address screen
+#define COUNTERS 3 // Counter summary screen
+
+
 // GLOBALS
+int displayMode = SPLASH ; // Wake up showing the splash screen
 
-int displayMode = 1; // Which eInk screen we are showing: 1=Title, 2=Network, 3=Last Message
 
-// Our network name when we are running in Access Point Mode.
-//const char *ssid = "Digame-STN-AP"; //STN = "(Base) Station"
 bool   accessPointMode = false;
 
 // Heartbeat managment variables
@@ -54,14 +57,11 @@ int    oldheartbeatMinute; // Value the last time we looked.
 int    bootMinute;         // The minute (0-59) within the hour we woke up at boot. 
 bool   heartbeatMessageNeeded = true;
 bool   bootMessageNeeded = true;
-float  baseStationTemperature = 0.0;
 
-// Instead of limiting heartbeats to an hourly schedule, make more flexible, based on a variable
 unsigned long lastHeartbeatMillis = 0; 
 
-
 unsigned long bootMillis=0;
-String currentTime;  // Update in Main Loop
+
 String myMACAddress; // Grab at boot time
 
 // Multi-Tasking
@@ -69,9 +69,8 @@ SemaphoreHandle_t mutex_v; // Mutex used to protect variables across RTOS tasks.
 TaskHandle_t messageManagerTask;
 TaskHandle_t eventDisplayManagerTask;
 
-String strDisplay=""; // contents of the event screen.
+String strDisplay=""; // contents of the Summary screen.
 
- 
 const int samples = 200;
 CircularBuffer<String, samples> loraMsgBuffer; // A buffer containing JSON messages to be 
                                                // sent to the Server
@@ -104,14 +103,15 @@ void splash(){
   
   String compileDate = F(__DATE__);
   String compileTime = F(__TIME__);
-
+  
+  debugUART.println();
   debugUART.println("*****************************************************");
   debugUART.println("         HEIMDALL Vehicle Counting System");
-  debugUART.println("              - BASE STATION UNIT -");
+  debugUART.println("         - WiFi-LoRa BASE STATION UNIT -");
   debugUART.println();
   debugUART.println("Model: DS-VC-BASE-LOR-1 (WiFi/LoRa Base Station)");
   debugUART.println("Version: " + SW_VERSION);
-  debugUART.println("Copyright 2021, Digame Systems. All rights reserved.");
+  debugUART.println("Copyright 2022, Digame Systems. All rights reserved.");
   debugUART.println();
   debugUART.print("Compiled on ");
   debugUART.print(compileDate);
@@ -122,8 +122,9 @@ void splash(){
   debugUART.println("HARDWARE INITIALIZATION");
   debugUART.println();
 
-  // first update should be full refresh
+  // first update should be full screen refresh
   initDisplay();
+  showWhite();
   displaySplashScreen("(Base Station)",SW_VERSION);
 
 }
@@ -184,64 +185,115 @@ void appendDatalog(String jsonPayload){
 
 
 
+
+// COUNTER LORA MESSAGE HANDLING FUNCTIONS 
+
+    String spacer(String s1){
+      s1 = s1 + "                       ";
+      return s1.substring(0,6);
+    }
+    
+    
+    bool isDuplicateMessage(String msg){
+      static String lastMessage="";
+      if (msg.equals(lastMessage)){ //If we've processed this message previously, but the counter 
+                                   // missed the ACK, it will resend. Don't process it twice. 
+        debugUART.println("We've seen this message before.");
+        return true;  
+      }
+      lastMessage = msg;
+      return false;
+    }
+    
+    String getDeviceAddress(String msg){
+      // Get the device's Address.
+      int idxstart = msg.indexOf('=')+1;
+      int idxstop  = msg.indexOf(','); 
+      String strAddress = msg.substring(idxstart,idxstop);  
+      return strAddress; 
+    }
+    
+    String getPayload(String msg){
+    
+      // Start and end of the JSON payload in the msg.
+      int idxstart = msg.indexOf('{');
+      int idxstop  = msg.lastIndexOf('}')+1; // The close of the JSON message payload.
+                                        // Using lastIndexOf since we are nesting JSON structs in some messages and 
+                                        // can have multiple {{}} situations. 
+      // The message contains a JSON payload extract to the char array json
+      String payload = msg.substring(idxstart,idxstop); 
+      return payload;    
+    }
+    
+    String getRSSI(String msg){
+      // Start and end of the JSON payload in the msg.
+      int idxstart = msg.indexOf('{');
+      int idxstop  = msg.lastIndexOf('}')+1; // The close of the JSON message payload.
+                                        // Using lastIndexOf since we are nesting JSON structs in some messages and 
+                                        // can have multiple {{}} situations. 
+      
+      // After the payload comes the RSSI and SNR values;
+      String trailer = msg.substring(idxstop +1);
+      //debugUART.println(trailer);
+      idxstop = trailer.indexOf(',');
+      
+      String strRSSI = trailer.substring(0,idxstop);
+      //debugUART.println(strRSSI);
+      strRSSI.trim(); 
+      return strRSSI; 
+    }
+    
+    String getSNR(String msg){
+        // Start and end of the JSON payload in the msg.
+      int idxstart = msg.indexOf('{');
+      int idxstop  = msg.lastIndexOf('}')+1; // The close of the JSON message payload.
+                                        // Using lastIndexOf since we are nesting JSON structs in some messages and 
+                                        // can have multiple {{}} situations. 
+      // After the payload comes the RSSI and SNR values;
+      String trailer = msg.substring(idxstop + 1);
+      //debugUART.println(trailer);
+      idxstop = trailer.indexOf(',');
+      String strSNR = trailer.substring(idxstop + 1);
+      //debugUART.println(strSNR);  
+      strSNR.trim();
+      return strSNR;  
+    }
+
+// END COUNTER LORA MESSAGE HANDLING FUNCTIONS 
+
+
+
 //****************************************************************************************
 String loraMsgToJSON(String msg){
-  static String lastMessageCountValue;
 
+  if (isDuplicateMessage(msg)) return "IGNORE"; 
+
+  // LoRa address
+  String strAddress = getDeviceAddress(msg);
+  // JSON message payload
+  String payload    = getPayload(msg);
+  // Signal strength
+  String strRSSI    = getRSSI(msg); 
+  // Data Quality 
+  String strSNR     = getSNR(msg);
+    
+  // Deserialize the JSON document in the payload
   StaticJsonDocument<512> doc;
-
-  // Get the device's Address.
-  int idxstart = msg.indexOf('=')+1;
-  int idxstop  = msg.indexOf(','); 
-  String strAddress = msg.substring(idxstart,idxstop);
-  
-  // Start and end of the JSON payload in the msg.
-  idxstart = msg.indexOf('{');
-  idxstop = msg.lastIndexOf('}')+1; // The close of the JSON message payload.
-                                    // Using lastIndexOf since we are nesting JSON structs in some messages and 
-                                    // can have multiple {{}} situations. 
-  
   char json[512] = {};
-
-  // The message contains a JSON payload extract to the char array json
-  String payload = msg.substring(idxstart,idxstop); 
-  //debugUART.println("LORA Payload");
-  //debugUART.println(payload);
   payload.toCharArray(json,payload.length()+1);
-
-  // Deserialize the JSON document
   DeserializationError error = deserializeJson(doc, json);
-
   // Test if parsing succeeds.
   if (error) {
     debugUART.print(F("deserializeJson() failed: "));
     debugUART.println(error.f_str());
     return "IGNORE";
   }
-
-  // After the payload comes the RSSI and SNR values;
-  String trailer = msg.substring(idxstop +1);
-  //debugUART.println(trailer);
-  idxstop = trailer.indexOf(',');
   
-  String strRSSI = trailer.substring(0,idxstop);
-  //debugUART.println(strRSSI);
-  strRSSI.trim();
-
-  String strSNR = trailer.substring(idxstop + 1);
-  //debugUART.println(strSNR);  
-  strSNR.trim();
+  // Fetch values from the doc object.  
   
-  // Fetch values.
-  //
-  // Most of the time, you can rely on the implicit casts.
-  // In other case, you can do doc["time"].as<long>();
+  // Grab the Event Type
   String strEventType;
   String et = doc["et"];
-
-  String strVersion = doc["v"];
-  String strLane = doc["l"];
-  
   if (et=="b"){
       strEventType = "Boot";
   } else if (et == "hb"){
@@ -252,23 +304,26 @@ String loraMsgToJSON(String msg){
       strEventType = "Unknown";
       debugUART.println("ERROR: Unknown Message Type!");
       return "IGNORE";  // If we don't know what this is, don't bother the server with it.
-  } 
+  }
 
+  // MAC address
+  String strMACAddr = doc["ma"];
+
+  // Firmware Version
+  String strVersion = doc["v"];
+ 
   // Timestamp
   String strTime = doc["ts"];
    
   // Count
   String strCount = doc["c"];
-  if ((et=="v") && (lastMessageCountValue.equals(strCount))) { //if we have a repeated vehicle message, don't send to server. 
-    debugUART.println("We've seen this message before.");
-    return "IGNORE";  
-  }
-  lastMessageCountValue = strCount;
- 
+  
+  // Lane for the event
+  String strLane = doc["l"];
+  
   // Detection Algorithm
   String strDetAlg;
   String da = doc["da"];
-
   if (da == "t"){
     strDetAlg = "Threshold";
   } else if (da == "c") {
@@ -277,49 +332,47 @@ String loraMsgToJSON(String msg){
     strDetAlg = "Unknown";
   }
 
+  // Counter RTC temperature
   String strTemperature = doc["t"];
 
-  String jsonPayload;
-
-  String strDeviceName = "Unknown Device";
-  String strDeviceMAC  = "00:01:02:03:04:05";
-
-  String strSettings = doc["s"];
-
-  // TODO: move to a look up function and come up with a better storage scheme.
-  if (strAddress == config.sens1Addr){
-    strDeviceName = config.sens1Name;
-    strDeviceMAC = config.sens1MAC;    
-    str1Count = strCount;
-  } else if (strAddress == config.sens2Addr){
-    strDeviceName = config.sens2Name;
-    strDeviceMAC = config.sens2MAC;
-    str2Count = strCount;
-  } else if (strAddress == config.sens3Addr){
-    strDeviceName = config.sens3Name;
-    strDeviceMAC = config.sens3MAC;
-    str3Count = strCount;
-  } else if (strAddress == config.sens4Addr){
-    strDeviceName = config.sens4Name;
-    strDeviceMAC = config.sens4MAC;
-    str4Count = strCount;
-  }
-
-  strTotal = String( str1Count.toInt() + str2Count.toInt() + str3Count.toInt() + str4Count.toInt());
-
+  // Number of send attempts the counter took to get an ACK
   String strRetries = doc["r"];
-  
-  if (displayMode ==3) { // Update the eInk display with the latest information
-    strDisplay = "Addr: " + strAddress + 
-                 "\nEvent:" + strEventType + 
-                 "\nCount:" + strCount + 
-                 "\nTemp: " + strTemperature +
-                 "\nDate: " + strTime.substring(0,strTime.indexOf(" ")) +
-                 "\nTime: " + strTime.substring(strTime.indexOf(" ")+1);    
-  }
 
+  // Settings -- reported in Boot and HB events. 
+  String strSettings = doc["s"];
+  
+  String strDeviceName = "Unknown Device";
+ 
+    // TODO: move to a look up function and come up with a better storage scheme.
+    if (strAddress == config.sens1Addr){
+      strDeviceName = config.sens1Name; 
+      if (strLane == "1"){config.sens1Zone1 = strCount;}else{config.sens1Zone2 = strCount;};  
+      str1Count = spacer(config.sens1Zone1) + config.sens1Zone2;
+      
+    } else if (strAddress == config.sens2Addr){
+      strDeviceName = config.sens2Name;
+      if (strLane == "1"){config.sens2Zone1 = strCount;}else{config.sens2Zone2 = strCount;};  
+      str2Count = spacer(config.sens2Zone1) + config.sens2Zone2;
+      
+    } else if (strAddress == config.sens3Addr){
+      strDeviceName = config.sens3Name;
+      if (strLane == "1"){config.sens3Zone1 = strCount;}else{config.sens3Zone2 = strCount;};  
+      str3Count = spacer(config.sens3Zone1) + config.sens3Zone2;
+      
+    } else if (strAddress == config.sens4Addr){
+      strDeviceName = config.sens4Name;
+      if (strLane == "1"){config.sens4Zone1 = strCount;}else{config.sens4Zone2 = strCount;};  
+      str4Count = spacer(config.sens4Zone1) + config.sens4Zone2;
+    }
+  
+
+  if (displayMode == COUNTERS) { // If strDisplay changes, the screen will update. See: displayManager task.
+    strDisplay = msg; }
+
+  // Build the WiFi JSON message
+  String jsonPayload;
   jsonPayload = "{\"deviceName\":\""       + strDeviceName + 
-                 "\",\"deviceMAC\":\""     + strDeviceMAC  + 
+                 "\",\"deviceMAC\":\""     + strMACAddr  + 
                  "\",\"firmwareVer\":\""   + strVersion  + 
                  "\",\"timeStamp\":\""     + strTime + 
                  "\",\"linkMode\":\""      + "LoRa" +
@@ -366,6 +419,7 @@ void processLoRaMessage(String msg){
       appendDatalog(jsonPayload);
   
       // Try connecting every five minutes 
+      // msLastConnectionAttempt set in enableWiFi
       if ((millis() - msLastConnectionAttempt) > (5*60*1000)){ 
 
         enableWiFi(config);
@@ -386,9 +440,9 @@ String buildJSONHeader(String eventType){
   jsonHeader = "{\"deviceName\":\""      + config.deviceName + 
                  "\",\"deviceMAC\":\""   + myMACAddress + // Read at boot
                  "\",\"firmwareVer\":\"" + TERSE_SW_VERSION  + 
-                 "\",\"timeStamp\":\""   + currentTime +  // Updated in main loop from RTC
+                 "\",\"timeStamp\":\""   + getRTCTime() +  // Updated in main loop from RTC
                  "\",\"eventType\":\""   + eventType +
-                 "\",\"temp\":\""        + String(baseStationTemperature,1) + 
+                 "\",\"temp\":\""        + getRTCTemperature() + 
                  "\""; 
                    
   return jsonHeader;
@@ -400,17 +454,16 @@ void handleModeButtonPress(){
   
   if (digitalRead(CTR_RESET)== LOW) {
     displayMode++;
-    if (displayMode>3) displayMode = 1;
+    if (displayMode > COUNTERS) displayMode = SPLASH;
     switch (displayMode) {
-      case 1:
+      case SPLASH:
         displaySplashScreen("(Base Station)",SW_VERSION);
         break;
-      case 2:
+      case NETWORK:
         displayIPScreen(WiFi.localIP().toString()); 
         break;
-      case 3:
-        //displayTextScreen("STATUS","    Listening\n\n       ...");
-        displayCountersSummaryScreen(strTotal,getCounterSummary());
+      case COUNTERS:
+        displayCountersSummaryScreen("Counter Values",getCounterSummary());
         break;     
     }
   }   
@@ -496,6 +549,7 @@ void messageManager(void *parameter){
 
 void eventDisplayManager(void *parameter){
   int eventDisplayUpdateRate = 20;
+  static unsigned long updates = 0; 
   String oldStrDisplay;
 
   #if !(SHOW_DATA_STREAM)
@@ -508,7 +562,10 @@ void eventDisplayManager(void *parameter){
     if (strDisplay != oldStrDisplay){
         oldStrDisplay = strDisplay;        
         //displayEventScreen(strDisplay);
-        displayCountersSummaryScreen(strTotal,getCounterSummary());
+        if (updates % 10 == 0){ showWhite();};
+        
+        displayCountersSummaryScreen("Counter Values",getCounterSummary());
+        updates ++;
       }       
   
     vTaskDelay(eventDisplayUpdateRate / portTICK_PERIOD_MS);
@@ -520,28 +577,22 @@ void eventDisplayManager(void *parameter){
 // Returns a string containing a summary of counts seen from each VC. 
 String getCounterSummary(){
   String retVal  = "";
-  retVal += " Ctr.   Count\n";
+  //retVal += " #  L1    L2\n";
+  retVal += " #  1/In  2/Out\n";
   retVal += " ---------------\n";
-  retVal += " 1      " + str1Count + "\n";
-  retVal += " 2      " + str2Count + "\n";
-  retVal += " 3      " + str3Count + "\n";
-  retVal += " 4      " + str4Count + "\n";
+  retVal += " 1  " + str1Count + "\n";
+  retVal += " 2  " + str2Count + "\n";
+  retVal += " 3  " + str3Count + "\n";
+  retVal += " 4  " + str4Count + "\n";
   return retVal;
 }
 
-//****************************************************************************************
-// Setup
-//****************************************************************************************
-void setup() {
-  
-  initPorts();                      // Set up serial ports and GPIO
-  splash();                         // Title, copyright, etc.
-  initJSONConfig(filename, config); // Load the program config parameters 
 
+bool bootToAPMode(){
+  bool retVal = false;
   String foo = "Digame-STN-" + getShortMACAddress();
   const char* ssid = foo.c_str();
 
-  // Check for an unconfigured base station or RESET button pressed at boot. 
   if ((config.ssid == "YOUR_SSID") || (digitalRead(CTR_RESET)== LOW)){
     
     // -- Enter Access Point Mode to configure.
@@ -558,8 +609,26 @@ void setup() {
     Serial.println(IP);
     displayAPScreen(ssid, WiFi.softAPIP().toString());  
    
-  }else{
-    
+  }
+  
+  return retVal;  
+}
+
+
+
+
+//****************************************************************************************
+// Setup
+//****************************************************************************************
+void setup() {
+  
+  initPorts();                      // Set up serial ports and GPIO
+  splash();                         // Title, copyright, etc.
+  initJSONConfig(filename, config); // Load the program config parameters 
+
+  // Check for an unconfigured base station or RESET button pressed at boot. 
+  if (bootToAPMode()==false) { 
+      
     // -- Running in Normal Mode.
     debugUART.println("    Device Name: " + config.deviceName);
     debugUART.println("    SSID: " + config.ssid);
@@ -588,8 +657,6 @@ void setup() {
     bootMinute = getRTCMinute();
     heartbeatMinute = bootMinute;
     oldheartbeatMinute = heartbeatMinute; 
-    currentTime = getRTCTime();
-    baseStationTemperature = getRTCTemperature();
        
     mutex_v = xSemaphoreCreateMutex();  //The mutex we will use to protect the jsonMsgBuffer
     
@@ -615,14 +682,18 @@ void setup() {
       &eventDisplayManagerTask, /* Task handle to keep track of created task */
       0);
 
-    displayMode=3;
+    displayMode=COUNTERS;
     //displayTextScreen("STATUS","    Listening\n\n       ...");
-    displayCountersSummaryScreen(strTotal,getCounterSummary());
+    displayCountersSummaryScreen("Counter Values",getCounterSummary());
   }
 
   upTimeMillis = millis() - bootMillis; 
   initWebServer();
 
+  DEBUG_PRINTLN("WAITING 5 SECONDS...");
+  delay(5000);
+  DEBUG_PRINTLN("RESTARTING WEB SERVER");
+  restartWebServer();
       
   debugUART.println();
   debugUART.println("RUNNING\n");
@@ -635,20 +706,14 @@ void setup() {
 //****************************************************************************************
 void loop() {
   String loraMsg;
-
-  /*/ For base stations, we always have a web server available.
-    WiFiClient client = server.available();   // Listen for incoming clients
-    if (client){ 
-      processWebClient("basestation", client, config); // Web interface to tweak params and save
-      initJSONConfig(filename, config); // Load the program config parameters 
-    }
-    */
-
+  
   if (resetFlag){
     debugUART.println("Reset flag has been flipped. Rebooting the processor.");
     delay(2000);  
     ESP.restart();
   }
+
+
   
   //**************************************************************************************
   //Access Point Operation
@@ -661,19 +726,14 @@ void loop() {
   //Standard Operation  
   //**************************************************************************************
   } else {
-    
-    // Grab the current time
-      currentTime = getRTCTime();
-      baseStationTemperature = getRTCTemperature();
-      
+       
     // Check for display mode button being pressed and switch display
       handleModeButtonPress();
     
     // Handle what the LoRa module has to say. 
     // If it's a message from another module, add it to the queue so the manager  
-    // function can handle it.
-    //
-    // Otherwise, just echo to the debugUART.
+    // function can handle it. Otherwise, just echo to the debugUART.
+    
     if (LoRaUART.available()) {
       
       loraMsg = LoRaUART.readStringUntil('\n');
@@ -683,23 +743,16 @@ void loop() {
            
       //Messages received by the Module start with '+RCV'
       if (loraMsg.indexOf("+RCV")>=0){
-        
         // Send an acknowlegement to the sender.
-        // Messages are of the form: "+RCV=2,2,16,-64,36" -- where the first number 
-        // after the "=" is the sender's address.
-        
-        // Start and end of the JSON payload in the msg.
-         int idxstart = loraMsg.indexOf('=')+1;
-         int idxstop = loraMsg.indexOf(',');
-      
+
         // Grab the address of the sender
-        String senderAddress = loraMsg.substring(idxstart,idxstop); 
+        String senderAddress = getDeviceAddress(loraMsg); 
       
         // Let the sender know we got the message.
         debugUART.println("Sending ACK. ");
         debugUART.println();
         sendReceiveReyax("AT+SEND=" + senderAddress + ",3,ACK"); 
-
+       
         // Put the message we received on the queue to process
         xSemaphoreTake(mutex_v, portMAX_DELAY);      
           loraMsgBuffer.push(loraMsg);

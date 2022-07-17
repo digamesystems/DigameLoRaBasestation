@@ -1,13 +1,15 @@
-  html { font-family: Helvetica; display: inline-block; margin: 0px auto; }
+  html { font-family: 'Poppins','Arial'; display: inline-block; margin: 0px auto; }
   
   form { margin:10px auto; 
          width: 300px; 
          background-color: #eeeeee; 
-         border: solid; 
+         border: solid;
+         border-radius:  10px; 
          padding: 5px 15px; }
   
   h1 { background-color: #ac0014; 
        border: none; 
+       border-radius: 10px;
        color:white; 
        padding: 16px 40px;
        text-decoration: none; 
@@ -17,7 +19,7 @@
   h2 { margin: auto; text-align: center; }
 
   h3 { margin: auto; text-align: center; font-size: 1.25em; }
-  
+
   label { width: 170px; 
           font-weight:bold; 
           font-style:italic; 
@@ -34,17 +36,29 @@
   input[type="password"] { width: 280px; }
   input[type="submit"] { width: 100px; }
 
-  table {border-spacing: 0 5px; border: 1px solid black;}
-  /*td,th {border: 1px solid blue;}*/
+  table {border-spacing: 0 5px;}
+
   td { text-align: center;}
-  table input[type="text"] { width: 120px; }
+  table input[type="text"] { width: 220px; }
   table label { width: 150px; }
-  table input[type="number"].narrow { width: 30px; }
+  table input[type="text"].narrow { width: 10px; }
 
   .center {
     position: absolute;
     left: 50%;
     -ms-transform: translate(-50%, -100%);
     transform: translate(-50%, -100%);
+  }
+
+  .button {
+    font: 14px Arial;
+    text-decoration: none;
+    background-color: #EEEEEE;
+    color: #333333;
+    padding: 4px 6px 4px 6px;
+    border-top: 1px solid #CCCCCC;
+    border-right: 1px solid #333333;
+    border-bottom: 1px solid #333333;
+    border-left: 1px solid #CCCCCC;
   }
 
