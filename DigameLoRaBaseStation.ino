@@ -412,8 +412,10 @@ void processLoRaMessage(String msg){
   
   if(WiFi.status()== WL_CONNECTED){
       // We have a WiFi connection. -- Upload the data to the the server. 
-      postJSON(jsonPayload, config);
-      
+      bool result = postJSON(jsonPayload, config);
+      if (result == false){ 
+        enableWiFi(config);
+      }
   } else {
       // No WiFi -- Save locally.
       appendDatalog(jsonPayload);
@@ -608,6 +610,8 @@ bool bootToAPMode(){
     Serial.print("  AP IP address: ");
     Serial.println(IP);
     displayAPScreen(ssid, WiFi.softAPIP().toString());  
+    useOTAFlag = true;
+    retVal = true;
    
   }
   
@@ -646,10 +650,7 @@ void setup() {
     initRTC();
 
     if (wifiConnected){ // Attempt to synch ESP32 clock with NTP Server...
-      //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-      synchTimesToNTP(); // This crashes the system when running with Bailee's phone as an AP. Why? 
-      //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-      
+      synchTimesToNTP();  
       displayIPScreen(WiFi.localIP().toString());
       delay(5000);
     }
@@ -689,11 +690,6 @@ void setup() {
 
   upTimeMillis = millis() - bootMillis; 
   initWebServer();
-
-  DEBUG_PRINTLN("WAITING 5 SECONDS...");
-  delay(5000);
-  DEBUG_PRINTLN("RESTARTING WEB SERVER");
-  restartWebServer();
       
   debugUART.println();
   debugUART.println("RUNNING\n");
@@ -713,8 +709,6 @@ void loop() {
     ESP.restart();
   }
 
-
-  
   //**************************************************************************************
   //Access Point Operation
   //**************************************************************************************
@@ -763,4 +757,12 @@ void loop() {
       }         
     }
   } 
+
+  if (restartWebServerFlag){
+    DEBUG_PRINTLN("RESTARTING WEB SERVER");
+    enableWiFi(config);
+    restartWebServer();
+  }
+  
+  vTaskDelay(20 / portTICK_PERIOD_MS); 
 }
