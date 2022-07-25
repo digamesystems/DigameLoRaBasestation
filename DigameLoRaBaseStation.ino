@@ -612,7 +612,7 @@ bool bootToAPMode(){
     displayAPScreen(ssid, WiFi.softAPIP().toString());  
     useOTAFlag = true;
     retVal = true;
-   
+ 
   }
   
   return retVal;  
@@ -756,12 +756,15 @@ void loop() {
         debugUART.println(loraMsg);      
       }         
     }
-  } 
-
-  if (restartWebServerFlag){
-    DEBUG_PRINTLN("RESTARTING WEB SERVER");
-    enableWiFi(config);
-    restartWebServer();
+   
+    // In standard operation, we'll restart the ESP when a web UI connection is made after a while. 
+    // This is a silly work around for a bug where the unit has issues when the web UI is inactive for 
+    // some time. TODO: Resolve!
+    if (restartWebServerFlag){
+      DEBUG_PRINTLN("RESTARTING.");
+      resetFlag = true;
+    }
+  
   }
   
   vTaskDelay(20 / portTICK_PERIOD_MS); 
