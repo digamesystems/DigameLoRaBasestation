@@ -2,9 +2,9 @@
   <head> 
     <meta name="viewport" content="width=device-width, initial-scale=1">
     
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
+    <!--link rel="preconnect" href="https://fonts.googleapis.com"-->
+    <!--link rel="preconnect" href="https://fonts.gstatic.com" crossorigin-->
+    <!--link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet"-->
       
     <link rel="stylesheet" type="text/css" href="style.css">
     <link rel="shortcut icon" href="favicon.ico"/>
@@ -76,6 +76,22 @@
         <small><span id="uptime">%UPTIME%</span></small>
         <br>
 
+        <br><label>MQTT</label>
+        <div>
+          <br>
+          <label for="mqtturl"><small>Server URL</small></label>
+          <input type="text" id="mqtturl" name="mqtturl" size="40" value="%config.mqttURL%">
+          <br><br>  
+          <label for="mqttport"><small>Port</small></label>
+          <input type="number" min="1" max="65534" id="mqttport" name="mqttport" value=%config.mqttPort%>
+          <br><br>          
+          
+          <label for="usemqtt"><small>Active</small></label>
+          <input type="checkbox" id="usemqtt" name="usemqtt" value="checked" %config.useMQTT%>
+          
+          <br>
+        </div>
+
         <br><label for="reboot">Reboot</label>
         <input type="checkbox" id="reboot" name="reboot" value="true"><p><br></p>
 
@@ -111,8 +127,7 @@
     <form action="/loraparams">
         <H3>LoRa<br><small>(Low-Power Long-Range Wireless Link)</small></H3>
         <p><em>Strategies for optimizing the parameters for LoRa communication may be found in the product manual. Both the counters and the base station must use the same RF parameters for communication to be successful.</em></p>
-        <label for="address">LoRa Address</label>
-        
+        <label for="address">This Base Station Addr</label>
         <input type="number" min="1" max="9" id="address" name="address" value=%config.loraAddress%><br><br>            
         <label for="networkid">Network ID</label>
         <input type="number" min="0" max="16" id="networkid" name="networkid" value=%config.loraNetworkID%><br><br>
@@ -171,7 +186,6 @@
   </form>
 
     <hr>
-    <!--img src=http://static1.squarespace.com/static/554a673ae4b0d7d5128155bb/t/5ef63fdf6b62f234d82610a2/1595258253753/?format=150w alt="Digame Logo" --->
     <img src="Digame_Logo_Full_Color.png" alt="Digame Logo">
     <p style="text-align:center; font-style:italic ">Copyright 2021, D&#237game Systems. All rights reserved.</p>
   

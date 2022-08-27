@@ -12,6 +12,8 @@
  
 
 #define USE_LORA true
+#define USE_MQTT true
+
 String model             = "DS-STN-LoRa-WiFi-1";
 String model_description = "(LoRa-WiFi Base Station)";  
 
@@ -19,6 +21,12 @@ bool showDataStream = false;
 
 //for Over-the-Air updates...
 #include <WiFi.h>
+
+#if USE_MQTT
+  #include <MQTT.h>
+  MQTTClient client(512);
+  WiFiClient net;
+#endif
 
 #include <ArduinoJson.h>   
 #include <CircularBuffer.h>   // Adafruit library. Pretty small!
@@ -44,10 +52,10 @@ Config config;                // Singleton data structure of program parameters 
 #define NETWORK 2  // Base station IP address screen
 #define COUNTERS 3 // Counter summary screen
 
+#include "globals.h"
 
 // GLOBALS
 int displayMode = SPLASH ; // Wake up showing the splash screen
-
 
 bool   accessPointMode = false;
 
@@ -55,7 +63,7 @@ bool   accessPointMode = false;
 int    heartbeatMinute;    // Issue Heartbeat message once an hour. Holds the current Minute.
 int    oldheartbeatMinute; // Value the last time we looked.
 int    bootMinute;         // The minute (0-59) within the hour we woke up at boot. 
-bool   heartbeatMessageNeeded = true;
+bool   heartbeatMessageNeeded = false;
 bool   bootMessageNeeded = true;
 
 unsigned long lastHeartbeatMillis = 0; 
@@ -80,7 +88,7 @@ CircularBuffer<String, samples> loraMsgBuffer; // A buffer containing JSON messa
 void   initPorts();
 void   splash();
 String buildJSONHeader(String);
-void   processLoRaMessage(String);
+bool   processLoRaMessage(String);
 void   messageManager(void *);
 
 
@@ -104,30 +112,32 @@ void splash(){
   String compileDate = F(__DATE__);
   String compileTime = F(__TIME__);
   
-  debugUART.println();
-  debugUART.println("*****************************************************");
-  debugUART.println("         HEIMDALL Vehicle Counting System");
-  debugUART.println("         - WiFi-LoRa BASE STATION UNIT -");
-  debugUART.println();
-  debugUART.println("Model: DS-VC-BASE-LOR-1 (WiFi/LoRa Base Station)");
-  debugUART.println("Version: " + SW_VERSION);
-  debugUART.println("Copyright 2022, Digame Systems. All rights reserved.");
-  debugUART.println();
-  debugUART.print("Compiled on ");
-  debugUART.print(compileDate);
-  debugUART.print(" at ");
-  debugUART.println(compileTime); 
-  debugUART.println("*****************************************************");
-  debugUART.println();
-  debugUART.println("HARDWARE INITIALIZATION");
-  debugUART.println();
+  DEBUG_PRINTLN();
+  DEBUG_PRINTLN("*****************************************************");
+  DEBUG_PRINTLN("         HEIMDALL Vehicle Counting System");
+  DEBUG_PRINTLN("         - WiFi-LoRa BASE STATION UNIT -");
+  DEBUG_PRINTLN();
+  DEBUG_PRINTLN("Model: DS-VC-BASE-LOR-1 (WiFi/LoRa Base Station)");
+  DEBUG_PRINTLN("Version: " + SW_VERSION);
+  DEBUG_PRINTLN("Copyright 2022, Digame Systems. All rights reserved.");
+  DEBUG_PRINTLN();
+  DEBUG_PRINT("Compiled on ");
+  DEBUG_PRINT(compileDate);
+  DEBUG_PRINT(" at ");
+  DEBUG_PRINTLN(compileTime); 
+  DEBUG_PRINTLN("*****************************************************");
+  DEBUG_PRINTLN();
+  DEBUG_PRINTLN("HARDWARE INITIALIZATION");
+  DEBUG_PRINTLN();
 
   // first update should be full screen refresh
   initDisplay();
   showWhite();
-  displaySplashScreen("(Base Station)",SW_VERSION);
+  displayCenteredText("HEIMDALL", "(Base Station)","","Vehicle","Counting System","Version", SW_VERSION);
+  displayCopyright();
 
 }
+
 
 //****************************************************************************************
 // Save a JSON log file to the server
@@ -135,7 +145,7 @@ void postDatalog(){
   if (initSDCard()){
     String jsonPayload="";
 
-    debugUART.println("POSTING DATALOG.TXT to server...");
+    DEBUG_PRINTLN("POSTING DATALOG.TXT to server...");
     
     File dataFile = SD.open("/DATALOG.TXT");
   
@@ -146,15 +156,15 @@ void postDatalog(){
           jsonPayload.trim();
           postJSON(jsonPayload, config);
        }
-       debugUART.println("Done.");
+       DEBUG_PRINTLN("Done.");
        dataFile.close();
        SD.remove("/DATALOG.TXT"); // Delete the log after upload   
     } else {
       // No file.
-      debugUART.println("No DATALOG.TXT present.");  
+      DEBUG_PRINTLN("No DATALOG.TXT present.");  
     }
   } else {
-    debugUART.println("ERROR! No SD card present.");
+    DEBUG_PRINTLN("ERROR! No SD card present.");
   }
 }
 
@@ -168,21 +178,20 @@ void appendDatalog(String jsonPayload){
   
     // If the file is available, write to it:
     if (dataFile) {
-      debugUART.println("Appending data file on SD:");
-      debugUART.println(jsonPayload);
+      DEBUG_PRINTLN("Appending data file on SD:");
+      DEBUG_PRINTLN(jsonPayload);
       
       dataFile.println(jsonPayload);
       dataFile.close();
     }
     // If the file isn't open, pop up an error:
     else {
-      debugUART.println("ERROR! Trouble opening datalog.txt");
+      DEBUG_PRINTLN("ERROR! Trouble opening datalog.txt");
     }
   } else {
     Serial.println("ERROR! SD Card not present.");  
   }
 }
-
 
 
 
@@ -198,12 +207,13 @@ void appendDatalog(String jsonPayload){
       static String lastMessage="";
       if (msg.equals(lastMessage)){ //If we've processed this message previously, but the counter 
                                    // missed the ACK, it will resend. Don't process it twice. 
-        debugUART.println("We've seen this message before.");
+        DEBUG_PRINTLN("We've seen this message before.");
         return true;  
       }
       lastMessage = msg;
       return false;
     }
+
     
     String getDeviceAddress(String msg){
       // Get the device's Address.
@@ -212,6 +222,7 @@ void appendDatalog(String jsonPayload){
       String strAddress = msg.substring(idxstart,idxstop);  
       return strAddress; 
     }
+
     
     String getPayload(String msg){
     
@@ -225,6 +236,7 @@ void appendDatalog(String jsonPayload){
       return payload;    
     }
     
+    
     String getRSSI(String msg){
       // Start and end of the JSON payload in the msg.
       int idxstart = msg.indexOf('{');
@@ -234,14 +246,15 @@ void appendDatalog(String jsonPayload){
       
       // After the payload comes the RSSI and SNR values;
       String trailer = msg.substring(idxstop +1);
-      //debugUART.println(trailer);
+      //DEBUG_PRINTLN(trailer);
       idxstop = trailer.indexOf(',');
       
       String strRSSI = trailer.substring(0,idxstop);
-      //debugUART.println(strRSSI);
+      //DEBUG_PRINTLN(strRSSI);
       strRSSI.trim(); 
       return strRSSI; 
     }
+
     
     String getSNR(String msg){
         // Start and end of the JSON payload in the msg.
@@ -251,10 +264,10 @@ void appendDatalog(String jsonPayload){
                                         // can have multiple {{}} situations. 
       // After the payload comes the RSSI and SNR values;
       String trailer = msg.substring(idxstop + 1);
-      //debugUART.println(trailer);
+      //DEBUG_PRINTLN(trailer);
       idxstop = trailer.indexOf(',');
       String strSNR = trailer.substring(idxstop + 1);
-      //debugUART.println(strSNR);  
+      //DEBUG_PRINTLN(strSNR);  
       strSNR.trim();
       return strSNR;  
     }
@@ -266,17 +279,8 @@ void appendDatalog(String jsonPayload){
 //****************************************************************************************
 String loraMsgToJSON(String msg){
 
-  if (isDuplicateMessage(msg)) return "IGNORE"; 
-
-  // LoRa address
-  String strAddress = getDeviceAddress(msg);
-  // JSON message payload
+  // FIRST, check if we have a well-formed payload. 
   String payload    = getPayload(msg);
-  // Signal strength
-  String strRSSI    = getRSSI(msg); 
-  // Data Quality 
-  String strSNR     = getSNR(msg);
-    
   // Deserialize the JSON document in the payload
   StaticJsonDocument<512> doc;
   char json[512] = {};
@@ -284,13 +288,23 @@ String loraMsgToJSON(String msg){
   DeserializationError error = deserializeJson(doc, json);
   // Test if parsing succeeds.
   if (error) {
-    debugUART.print(F("deserializeJson() failed: "));
-    debugUART.println(error.f_str());
+    DEBUG_PRINT(F("deserializeJson() failed: "));
+    DEBUG_PRINTLN(error.f_str());
     return "IGNORE";
   }
   
-  // Fetch values from the doc object.  
-  
+
+  // SECOND, We have a well-formed payload, grab other bits from the message.
+  // LoRa address
+  String strAddress = getDeviceAddress(msg);
+  // Signal strength
+  String strRSSI    = getRSSI(msg); 
+  // Data Quality 
+  String strSNR     = getSNR(msg);
+  //TODO: the above calls might fail with corruption of other parts of the message than the payload. Put in a check and return IGNORE if any of these fail. 
+
+    
+  // FINALLY, Fetch values from the doc object and build a JSON Message for the server.  
   // Grab the Event Type
   String strEventType;
   String et = doc["et"];
@@ -302,7 +316,7 @@ String loraMsgToJSON(String msg){
       strEventType = "Vehicle";     
   } else { 
       strEventType = "Unknown";
-      debugUART.println("ERROR: Unknown Message Type!");
+      DEBUG_PRINTLN("ERROR: Unknown Message Type!");
       return "IGNORE";  // If we don't know what this is, don't bother the server with it.
   }
 
@@ -366,9 +380,6 @@ String loraMsgToJSON(String msg){
     }
   
 
-  if (displayMode == COUNTERS) { // If strDisplay changes, the screen will update. See: displayManager task.
-    strDisplay = msg; }
-
   // Build the WiFi JSON message
   String jsonPayload;
   jsonPayload = "{\"deviceName\":\""       + strDeviceName + 
@@ -391,8 +402,14 @@ String loraMsgToJSON(String msg){
   if ((et=="b")||(et=="hb")){
     jsonPayload = jsonPayload + "\",\"settings\":" + strSettings;                  
   }
+
   
   jsonPayload = jsonPayload + "}";
+
+  if ((displayMode == COUNTERS)) { // If strDisplay changes, the screen will update. See: displayManager task.
+                                   // Don't update on non-vehicle events like heartbeat.
+    strDisplay = msg; 
+  }
   
   return jsonPayload;
   
@@ -401,22 +418,30 @@ String loraMsgToJSON(String msg){
 //****************************************************************************************
 // Parse a LoRa message from a vehicle counter. Format as a JSON message
 // and POST it to the server if WiFi is available. If not, save to the SD card. 
-void processLoRaMessage(String msg){
+bool processLoRaMessage(String msg){
   String jsonPayload;
 
   jsonPayload = loraMsgToJSON(msg);
 
-  if (jsonPayload == "IGNORE"){
-    return;
+  if (jsonPayload == "IGNORE"){ 
+    return false;
   }
+
+  bool result = postJSON(jsonPayload, config); // http POST of data to Jared's server
   
-  if(WiFi.status()== WL_CONNECTED){
-      // We have a WiFi connection. -- Upload the data to the the server. 
-      bool result = postJSON(jsonPayload, config);
-      if (result == false){ 
-        enableWiFi(config);
-      }
-  } else {
+  #if USE_MQTT
+    if (config.useMQTT == "checked"){
+      if ( (result) && (client.connected()) )
+        bool publishSuccessful = client.publish("/digame/event", jsonPayload); // mqqt PUBLISH to broker
+
+        //TODO: think about something like: result = (result && publishSuccessful);
+        //...
+    }
+  #endif
+      
+
+  //} else {
+    /* TEST TEST TEST - Turn this off temporarily
       // No WiFi -- Save locally.
       appendDatalog(jsonPayload);
   
@@ -430,7 +455,10 @@ void processLoRaMessage(String msg){
           postDatalog();  // POSTS and clears out the log.
         }
      }
-   } 
+    */
+   //} 
+
+   return result;
 }
 
 
@@ -459,19 +487,73 @@ void handleModeButtonPress(){
     if (displayMode > COUNTERS) displayMode = SPLASH;
     switch (displayMode) {
       case SPLASH:
-        displaySplashScreen("(Base Station)",SW_VERSION);
+        displayCenteredText("HEIMDALL", "(LIDAR Counter)","","Vehicle","Counting System","Version", SW_VERSION);
+        displayCopyright();
         break;
       case NETWORK:
-        displayIPScreen(WiFi.localIP().toString()); 
+        displayCenteredText("NETWORK","(Station Mode)","","IP Address","",WiFi.localIP().toString());
+        displayCopyright();
         break;
       case COUNTERS:
-        displayCountersSummaryScreen("Counter Values",getCounterSummary());
+        //displayCountersSummaryScreen("Counter Values",getCounterSummary());
+        displayRawText("SUMMARY", getCounterSummary());
+        displayCopyright(); 
         break;     
     }
   }   
   
 }
 
+
+bool networkHealthy(){
+  //TODO: Test for network being up. -- If not, restart WiFi/MQTT properly.  
+  
+  if(WiFi.status()!= WL_CONNECTED){ //No WiFi connection?      
+    enableWiFi(config); // Attempt to enable it... 
+  }
+    
+  #if USE_MQTT
+    if (WiFi.status() == WL_CONNECTED){ // We have a WiFi connection...
+      if (config.useMQTT == "checked"){
+        if (!client.connected()) {      // Check if we're connected to the MQTT server...
+          DEBUG_PRINTLN("Reconnnecting to MQTT server...");
+          mqttConnect();                // No? Reconnect. 
+        }
+        return ( (WiFi.status() == WL_CONNECTED) && (client.connected()) ); //"healthy" = WiFi and MQTT are connected. 
+      }
+    }
+  #endif 
+  
+  return (WiFi.status() == WL_CONNECTED); // "healthy" = WiFi is connected.
+ 
+}
+
+
+//****************************************************************************************
+// Given a string, can we find a well-formed JSON payload in it?
+bool messageIsWellFormed(String msg){
+  
+  bool retval = true;
+  
+  String payload = getPayload(msg);
+  
+  // Deserialize the JSON document in the payload
+  StaticJsonDocument<512> doc;
+  char json[512] = {};
+  payload.toCharArray(json,payload.length()+1);
+  DeserializationError error = deserializeJson(doc, json);
+ 
+  // Test if parsing succeeds.
+  if (error) {
+    DEBUG_PRINTLN("ERROR: Message is not well-formed.");
+    DEBUG_PRINT(F("deserializeJson() failed: "));
+    DEBUG_PRINTLN(error.f_str());
+    retval = false;
+  }
+
+  return retval;
+  
+}
 
 //****************************************************************************************
 // Experimenting with using a circular buffer and multi-tasking to enqueue 
@@ -480,68 +562,136 @@ void messageManager(void *parameter){
   String activeMessage;
   String jsonPayload;
 
-  debugUART.print("Message Manager Running on Core #: ");
-  debugUART.println(xPortGetCoreID());
+  DEBUG_PRINT("Message Manager Running on Core #: ");
+  DEBUG_PRINTLN(xPortGetCoreID());
   
   for(;;){  
 
-    //Serial.println("messageManager TICK");
-    //**********************************************
-    // Check if we need to send a boot message
-    //**********************************************      
-    if (bootMessageNeeded){
-
-      jsonPayload = buildJSONHeader("Boot");
-      jsonPayload = jsonPayload + "}";
-
-      //debugUART.println(jsonPayload);
-      postJSON(jsonPayload, config);
-
-      xSemaphoreTake(mutex_v, portMAX_DELAY); 
-        bootMessageNeeded = false;
-      xSemaphoreGive(mutex_v);
+    if ( networkHealthy() ) // TEST TEST TEST 
+    { 
       
-    }
+      #if USE_MQTT 
+        if (config.useMQTT=="checked")client.loop();  
+      #endif
+  
+      //**********************************************
+      // Check if we need to send a boot message
+      //**********************************************      
+      if (bootMessageNeeded){
+        jsonPayload = buildJSONHeader("Boot");
+        jsonPayload = jsonPayload + "}";
+  
+        //DEBUG_PRINTLN(jsonPayload);
+        postJSON(jsonPayload, config);
+        
+        #if USE_MQTT
+          if (config.useMQTT == "checked") {
+            client.publish("/digame/boot",jsonPayload);
+          }
+        #endif
+  
+        xSemaphoreTake(mutex_v, portMAX_DELAY); 
+          bootMessageNeeded = false;
+        xSemaphoreGive(mutex_v);
+        
+      }
+      
+  
+      //**********************************************
+      // Check if we need to send a heartbeat message
+      //**********************************************
+      if (lastHeartbeatMillis == 0){ //lastHeartbeatMillis is un-initialized.
+        DEBUG_PRINTLN("lastHeartbeatMillis = 0");
+        lastHeartbeatMillis = millis();
+      }
+      
+      unsigned long deltaT = (millis() - lastHeartbeatMillis);
+      
+      unsigned long slippedMilliSeconds; 
+      if ( (deltaT) >= config.heartbeatInterval.toInt() * 1000 ){
+        DEBUG_PRINT("deltaT: ");
+        DEBUG_PRINTLN(deltaT);
+        slippedMilliSeconds = deltaT - config.heartbeatInterval.toInt() *1000; // Since this Task is on a 100 msec schedule, we'll always be a little late...
+        DEBUG_PRINTLN(slippedMilliSeconds);
+        heartbeatMessageNeeded = true;
+      }  
+      
+      if (heartbeatMessageNeeded){
+        DEBUG_PRINTLN("Heartbeat needed.");
+        
+        xSemaphoreTake(mutex_v, portMAX_DELAY); 
+          lastHeartbeatMillis = millis() - slippedMilliSeconds; // Small tweak to time to reflect when we should have fired the event. 
+          heartbeatMessageNeeded = false;
+        xSemaphoreGive(mutex_v);
+        
+        jsonPayload = buildJSONHeader("Heartbeat");
+        jsonPayload = jsonPayload + "}";
+  
+        //DEBUG_PRINTLN(jsonPayload);
+        postJSON(jsonPayload, config);  
+        
+        #if USE_MQTT
+          if (config.useMQTT=="checked"){
+            client.publish("/digame/heartbeat", jsonPayload);
+          }
+        #endif
+      }
+         
+      //********************************************
+      // Check for Messages on the Queue and Process
+      //********************************************
+      if (loraMsgBuffer.size()>0) { // We have a message to send.
+
+        bool postSuccessful = false;
+        
+        activeMessage = String(loraMsgBuffer.first().c_str()); // Read from the buffer without removing the data from it.
+        
+        DEBUG_PRINTLN("Active Message: " + activeMessage);
+        DEBUG_PRINT("WiFi Connected: ");
+        DEBUG_PRINTLN((WiFi.status() == WL_CONNECTED));
+        #if USE_MQTT
+          if (config.useMQTT == "checked"){
+            DEBUG_PRINT("MQTT Connected: ");
+          }
+        #endif
+        DEBUG_PRINTLN(client.connected());
+
+
+        if (isDuplicateMessage(activeMessage)){ // The counter may not have heard our "ACK" and is sending the same msg again. Ignore it.
+          xSemaphoreTake(mutex_v, portMAX_DELAY); 
+            DEBUG_PRINTLN("Shifting Duplicate Message...\n");
+            activeMessage=loraMsgBuffer.shift();  // Take duplicate messages off the queue.
+          xSemaphoreGive(mutex_v);
+          postSuccessful = false;
+        }else {
+          postSuccessful = processLoRaMessage(activeMessage);
+        }
+
+        DEBUG_PRINT("POST Successful: ");
+        DEBUG_PRINTLN(postSuccessful);
+         
+        if(postSuccessful){ // HTTP POST worked. If using MQTT, Send the MQTT message as well.
+          
+          #if USE_MQTT
+            if (config.useMQTT == "checked"){
+              bool result = client.publish("/digame/lora", String(millis()) + ": " + activeMessage);
+              DEBUG_PRINT("MQTT Publish Result: ");
+              DEBUG_PRINTLN(result);
+            }
+          #endif
+          
+          //Pull data off of the queue after successful transmission.
+          // Q: Do we want to require that both HTTP and MQTT worked? 
+          //    Currently only need HTTP POST success...
+          xSemaphoreTake(mutex_v, portMAX_DELAY); 
+            DEBUG_PRINTLN("Shifting Active Message...\n");
+            activeMessage=loraMsgBuffer.shift();
+          xSemaphoreGive(mutex_v);
+ 
+        }
+      
+      }
     
-
-    //**********************************************
-    // Check if we need to send a heartbeat message
-    //**********************************************
-    unsigned long deltaT = (millis() - lastHeartbeatMillis);
-    unsigned long slippedMilliSeconds; 
-    if ( (deltaT) >= config.heartbeatInterval.toInt() * 1000 ){
-      debugUART.println(deltaT);
-      slippedMilliSeconds = deltaT - config.heartbeatInterval.toInt() *1000; // Since this Task is on a 100 msec schedule, we'll always be a little late...
-      debugUART.println(slippedMilliSeconds);
-      heartbeatMessageNeeded = true;
-    }  
-    
-    if (heartbeatMessageNeeded){
-      debugUART.println("Heartbeat needed.");
-      
-      xSemaphoreTake(mutex_v, portMAX_DELAY); 
-        lastHeartbeatMillis = millis() - slippedMilliSeconds; // Small tweak to time to reflect when we should have fired the event. 
-        heartbeatMessageNeeded = false;
-      xSemaphoreGive(mutex_v);
-      
-      jsonPayload = buildJSONHeader("Heartbeat");
-      jsonPayload = jsonPayload + "}";
-
-      //debugUART.println(jsonPayload);
-      postJSON(jsonPayload, config);
-      
-    }
-       
-    //********************************************
-    // Check for Messages on the Queue and Process
-    //********************************************
-    if (loraMsgBuffer.size()>0){
-
-      xSemaphoreTake(mutex_v, portMAX_DELAY); 
-        activeMessage=loraMsgBuffer.shift();
-      xSemaphoreGive(mutex_v);
-
-      processLoRaMessage(activeMessage);
     }
 
     upTimeMillis = millis() - bootMillis; 
@@ -555,8 +705,8 @@ void eventDisplayManager(void *parameter){
   String oldStrDisplay;
 
   #if !(SHOW_DATA_STREAM)
-    debugUART.print("Display Manager Running on Core #: ");
-    debugUART.println(xPortGetCoreID());
+    DEBUG_PRINT("Display Manager Running on Core #: ");
+    DEBUG_PRINTLN(xPortGetCoreID());
   #endif 
   
   for(;;){  
@@ -566,7 +716,8 @@ void eventDisplayManager(void *parameter){
         //displayEventScreen(strDisplay);
         if (updates % 10 == 0){ showWhite();};
         
-        displayCountersSummaryScreen("Counter Values",getCounterSummary());
+        displayRawText("SUMMARY",getCounterSummary());
+        displayCopyright();
         updates ++;
       }       
   
@@ -578,8 +729,7 @@ void eventDisplayManager(void *parameter){
 //****************************************************************************************
 // Returns a string containing a summary of counts seen from each VC. 
 String getCounterSummary(){
-  String retVal  = "";
-  //retVal += " #  L1    L2\n";
+  String retVal  = " Counter  Values\n\n";
   retVal += " #  1/In  2/Out\n";
   retVal += " ---------------\n";
   retVal += " 1  " + str1Count + "\n";
@@ -599,17 +749,18 @@ bool bootToAPMode(){
     
     // -- Enter Access Point Mode to configure.
     accessPointMode = true; 
-    debugUART.println("*******************************");
-    debugUART.println("Launching in Access Point Mode!");  
-    debugUART.println("*******************************");
-    debugUART.println("Setting AP (Access Point)…");
+    DEBUG_PRINTLN("*******************************");
+    DEBUG_PRINTLN("Launching in Access Point Mode!");  
+    DEBUG_PRINTLN("*******************************");
+    DEBUG_PRINTLN("Setting AP (Access Point)…");
     
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid);
     IPAddress IP = WiFi.softAPIP();
     Serial.print("  AP IP address: ");
     Serial.println(IP);
-    displayAPScreen(ssid, WiFi.softAPIP().toString());  
+    displayCenteredText("NETWORK","(AP Mode)","","SSID",ssid,"","IP Address", WiFi.softAPIP().toString());
+    displayCopyright();
     useOTAFlag = true;
     retVal = true;
  
@@ -619,7 +770,34 @@ bool bootToAPMode(){
 }
 
 
+//MQTT Message Received event
+void messageReceived(String &topic, String &payload) {
+  Serial.println("incoming: " + topic + " - " + payload);
+  
+  // Note: Do not use the client in the callback to publish, subscribe or
+  // unsubscribe as it may cause deadlocks when other things arrive while
+  // sending and receiving acknowledgments. Instead, change a global variable,
+  // or push to a queue and handle it in the loop after calling `client.loop()`.
+}
 
+#if USE_MQTT
+  void mqttConnect(){
+    unsigned long T1, T2;
+    T1 = millis();
+    T2 = T1;
+    bool timeout = false;
+    DEBUG_PRINT("    Connecting to MQTT Broker...");
+
+    while (!client.connect("digame") && (!timeout)){
+      Serial.print(".");
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+      T2 = millis();
+      timeout = ((T2-T1) > 6000);
+    }
+    
+    if (client.connected()){ Serial.println("    Connected!"); }else{ Serial.println("    Connect failed.");}   
+  }
+#endif
 
 //****************************************************************************************
 // Setup
@@ -634,16 +812,26 @@ void setup() {
   if (bootToAPMode()==false) { 
       
     // -- Running in Normal Mode.
-    debugUART.println("    Device Name: " + config.deviceName);
-    debugUART.println("    SSID: " + config.ssid);
-    debugUART.println("    ServerURL: " + config.serverURL);
+    DEBUG_PRINTLN("    Device Name: " + config.deviceName);
+    DEBUG_PRINTLN("    SSID: " + config.ssid);
+    DEBUG_PRINTLN("    Server URL: " + config.serverURL);
     
     setFullPowerMode(); //Run at full power and max speed with WiFi enabled by default
     delay(500);
     enableWiFi(config);
     
     myMACAddress = getMACAddress();
-    debugUART.println("    MAC Address: " + myMACAddress);
+    DEBUG_PRINTLN("    MAC Address: " + myMACAddress);
+
+    #if USE_MQTT
+      if(config.useMQTT =="checked"){
+        DEBUG_PRINTLN("    MQTT URL: " + config.mqttURL);
+        DEBUG_PRINTLN("    MQTT Port: " + config.mqttPort);
+        client.begin(config.mqttURL.c_str(), config.mqttPort.toInt(), net);
+        client.onMessage(messageReceived);
+        mqttConnect();
+      }
+    #endif 
       
     configureLoRa(config);
     
@@ -651,7 +839,8 @@ void setup() {
 
     if (wifiConnected){ // Attempt to synch ESP32 clock with NTP Server...
       synchTimesToNTP();  
-      displayIPScreen(WiFi.localIP().toString());
+      displayCenteredText("NETWORK","(Station Mode)","","IP Address","",WiFi.localIP().toString());
+      displayCopyright();
       delay(5000);
     }
 
@@ -684,15 +873,20 @@ void setup() {
       0);
 
     displayMode=COUNTERS;
-    //displayTextScreen("STATUS","    Listening\n\n       ...");
-    displayCountersSummaryScreen("Counter Values",getCounterSummary());
+
+    displayRawText("SUMMARY",getCounterSummary());
+    displayCopyright();
+  
+  } else {
+  
+    initWebServer(); // TEST TEST TEST 
+  
   }
 
   upTimeMillis = millis() - bootMillis; 
-  initWebServer();
       
-  debugUART.println();
-  debugUART.println("RUNNING\n");
+  DEBUG_PRINTLN();
+  DEBUG_PRINTLN("RUNNING\n");
   
 }
 
@@ -704,68 +898,64 @@ void loop() {
   String loraMsg;
   
   if (resetFlag){
-    debugUART.println("Reset flag has been flipped. Rebooting the processor.");
+    DEBUG_PRINTLN("Reset flag has been flipped. Rebooting the processor.");
     delay(2000);  
     ESP.restart();
   }
-
-  //**************************************************************************************
-  //Access Point Operation
-  //**************************************************************************************
-  if (accessPointMode){
- 
-    //Nothing to do here... 
-    
   //**************************************************************************************
   //Standard Operation  
   //**************************************************************************************
-  } else {
-       
+  if (!accessPointMode){
     // Check for display mode button being pressed and switch display
       handleModeButtonPress();
     
     // Handle what the LoRa module has to say. 
     // If it's a message from another module, add it to the queue so the manager  
     // function can handle it. Otherwise, just echo to the debugUART.
-    
-    if (LoRaUART.available()) {
-      
-      loraMsg = LoRaUART.readStringUntil('\n');
-      
-      debugUART.println("LoRa Message Received: ");  
-      debugUART.println(loraMsg);
-           
-      //Messages received by the Module start with '+RCV'
-      if (loraMsg.indexOf("+RCV")>=0){
-        // Send an acknowlegement to the sender.
+    if (LoRaUART.available()) {    
+      loraMsg = LoRaUART.readStringUntil('\n');  
+      DEBUG_PRINTLN("LoRa Message Received: ");  
+      DEBUG_PRINTLN(loraMsg);
 
-        // Grab the address of the sender
-        String senderAddress = getDeviceAddress(loraMsg); 
+      if (messageIsWellFormed(loraMsg)) {  // Looks like one of our messages. 
+        
+        DEBUG_PRINTLN("Message is well-formed.");
+        
+        //Messages received by the Module start with '+RCV'
+        if (loraMsg.indexOf("+RCV")>=0){
+          // Grab the address of the sender
+          String senderAddress = getDeviceAddress(loraMsg); 
+  
+          vTaskDelay(50 / portTICK_PERIOD_MS);  // TESTING: Give the counter a little bit to get ready for the ACK. 
+          
+          // Let the sender know we got the message.
+          DEBUG_PRINTLN("Sending ACK. ");
+          DEBUG_PRINTLN();
+          sendReceiveReyax("AT+SEND=" + senderAddress + ",3,ACK"); 
+          
+          // Put the message we received on the queue to process
+          xSemaphoreTake(mutex_v, portMAX_DELAY);      
+            loraMsgBuffer.push(loraMsg);
+          xSemaphoreGive(mutex_v);
       
-        // Let the sender know we got the message.
-        debugUART.println("Sending ACK. ");
-        debugUART.println();
-        sendReceiveReyax("AT+SEND=" + senderAddress + ",3,ACK"); 
-       
-        // Put the message we received on the queue to process
-        xSemaphoreTake(mutex_v, portMAX_DELAY);      
-          loraMsgBuffer.push(loraMsg);
-        xSemaphoreGive(mutex_v);
-    
-      } else {
-        debugUART.println(loraMsg);      
-      }         
+        } else {
+          
+          DEBUG_PRINTLN(loraMsg);     
+           
+        } 
+                
+      }
     }
-   
-    // In standard operation, we'll restart the ESP when a web UI connection is made after a while. 
-    // This is a silly work around for a bug where the unit has issues when the web UI is inactive for 
-    // some time. TODO: Resolve!
-    if (restartWebServerFlag){
-      DEBUG_PRINTLN("RESTARTING.");
-      resetFlag = true;
-    }
-  
   }
-  
-  vTaskDelay(20 / portTICK_PERIOD_MS); 
+
+  // In standard operation, we'll restart the ESP when a /restart url is hit. 
+  // This is a silly work around for a bug where the unit has issues when the web UI is inactive for 
+  // some time. TODO: Resolve!
+  if (restartWebServerFlag){
+    DEBUG_PRINTLN("RESTARTING.");
+    resetFlag = true;
+ }
+
+  upTimeMillis = millis() - bootMillis;
+  vTaskDelay(10 / portTICK_PERIOD_MS); 
 }
