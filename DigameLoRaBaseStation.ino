@@ -19,18 +19,19 @@ String model_description = "(LoRa-WiFi Base Station)";
 
 bool showDataStream = false;
 
-//for Over-the-Air updates...
 #include <WiFi.h>
 
 #if USE_MQTT
-  #include <MQTT.h>
+  #include <MQTT.h> // Joël Gähwiler's MQTT library --  https://github.com/256dpi/arduino-mqtt
   MQTTClient client(512);
   WiFiClient net;
 #endif
 
+#define ARDUINOTRACE_ENABLE 1  // En(/Dis)able all traces
+#include <ArduinoTrace.h>
+
 #include <ArduinoJson.h>   
 #include <CircularBuffer.h>   // Adafruit library. Pretty small!
-
 
 #include <digameDebug.h>
 #include "digameVersion.h"
@@ -79,8 +80,8 @@ TaskHandle_t eventDisplayManagerTask;
 
 String strDisplay=""; // contents of the Summary screen.
 
-const int samples = 200;
-CircularBuffer<String, samples> loraMsgBuffer; // A buffer containing JSON messages to be 
+const int samples = 100;
+CircularBuffer<String *, samples> loraMsgBuffer; // A buffer containing JSON messages to be 
                                                // sent to the Server
 
 // FUNCTION DECLARATIONS
@@ -108,7 +109,8 @@ void initPorts(){
 //****************************************************************************************
 // A pretty(?) splash notification to debugUART
 void splash(){
-  
+
+  TRACE();
   String compileDate = F(__DATE__);
   String compileTime = F(__TIME__);
   
@@ -192,8 +194,6 @@ void appendDatalog(String jsonPayload){
     Serial.println("ERROR! SD Card not present.");  
   }
 }
-
-
 
 // COUNTER LORA MESSAGE HANDLING FUNCTIONS 
 
@@ -293,7 +293,6 @@ String loraMsgToJSON(String msg){
     return "IGNORE";
   }
   
-
   // SECOND, We have a well-formed payload, grab other bits from the message.
   // LoRa address
   String strAddress = getDeviceAddress(msg);
@@ -506,7 +505,19 @@ void handleModeButtonPress(){
 
 
 bool networkHealthy(){
-  //TODO: Test for network being up. -- If not, restart WiFi/MQTT properly.  
+  /*
+   Test for network being up. -- If not, restart WiFi/MQTT properly.  
+   
+    NB: Since this is repeatedly called in the messageManager task, if we have no 
+    network, we repeatedly try to connect. Is this what we want? Do we want to wait a
+    while before retrying? We could potentially miss cars if we spend our time spinning 
+    here.
+
+    Frankly, would a reboot be better? I've seen some online comments about memory
+    leaks in the WiFi.h library around reconnecting... 
+
+    
+  */
   
   if(WiFi.status()!= WL_CONNECTED){ //No WiFi connection?      
     enableWiFi(config); // Attempt to enable it... 
@@ -522,10 +533,10 @@ bool networkHealthy(){
         return ( (WiFi.status() == WL_CONNECTED) && (client.connected()) ); //"healthy" = WiFi and MQTT are connected. 
       }
     }
+  #else
+    return (WiFi.status() == WL_CONNECTED); // "healthy" = WiFi is connected.
   #endif 
-  
-  return (WiFi.status() == WL_CONNECTED); // "healthy" = WiFi is connected.
- 
+
 }
 
 
@@ -559,7 +570,6 @@ bool messageIsWellFormed(String msg){
 // Experimenting with using a circular buffer and multi-tasking to enqueue 
 // messages to the server...
 void messageManager(void *parameter){
-  String activeMessage;
   String jsonPayload;
 
   DEBUG_PRINT("Message Manager Running on Core #: ");
@@ -644,23 +654,24 @@ void messageManager(void *parameter){
 
         bool postSuccessful = false;
         
-        activeMessage = String(loraMsgBuffer.first().c_str()); // Read from the buffer without removing the data from it.
-        
+        String activeMessage = String(loraMsgBuffer.first()->c_str()); // Read from the buffer without removing the data from it.
+
+        DEBUG_PRINTLN("Free Heap: " + String(esp_get_free_heap_size()) );
         DEBUG_PRINTLN("Active Message: " + activeMessage);
         DEBUG_PRINT("WiFi Connected: ");
         DEBUG_PRINTLN((WiFi.status() == WL_CONNECTED));
         #if USE_MQTT
           if (config.useMQTT == "checked"){
             DEBUG_PRINT("MQTT Connected: ");
+            DEBUG_PRINTLN(client.connected());
           }
         #endif
-        DEBUG_PRINTLN(client.connected());
-
-
+   
         if (isDuplicateMessage(activeMessage)){ // The counter may not have heard our "ACK" and is sending the same msg again. Ignore it.
           xSemaphoreTake(mutex_v, portMAX_DELAY); 
             DEBUG_PRINTLN("Shifting Duplicate Message...\n");
-            activeMessage=loraMsgBuffer.shift();  // Take duplicate messages off the queue.
+            String  * entry = loraMsgBuffer.shift();
+            delete entry;
           xSemaphoreGive(mutex_v);
           postSuccessful = false;
         }else {
@@ -685,7 +696,8 @@ void messageManager(void *parameter){
           //    Currently only need HTTP POST success...
           xSemaphoreTake(mutex_v, portMAX_DELAY); 
             DEBUG_PRINTLN("Shifting Active Message...\n");
-            activeMessage=loraMsgBuffer.shift();
+            String  * entry = loraMsgBuffer.shift();
+            delete entry;
           xSemaphoreGive(mutex_v);
  
         }
@@ -878,6 +890,7 @@ void setup() {
     displayCopyright();
   
   } else {
+
   
     initWebServer(); // TEST TEST TEST 
   
@@ -886,6 +899,8 @@ void setup() {
   upTimeMillis = millis() - bootMillis; 
       
   DEBUG_PRINTLN();
+
+  DEBUG_PRINTLN("Free Heap: " + String(esp_get_free_heap_size()) );
   DEBUG_PRINTLN("RUNNING\n");
   
 }
@@ -896,6 +911,7 @@ void setup() {
 //****************************************************************************************
 void loop() {
   String loraMsg;
+  String senderAddress; // The lora address of the device talking to us.
   
   if (resetFlag){
     DEBUG_PRINTLN("Reset flag has been flipped. Rebooting the processor.");
@@ -917,33 +933,27 @@ void loop() {
       DEBUG_PRINTLN("LoRa Message Received: ");  
       DEBUG_PRINTLN(loraMsg);
 
+      // Always ack the messages. If well-formed, process. 
+      //Messages received by the Module start with '+RCV'
+      if (loraMsg.indexOf("+RCV")>=0){// If this fails, we'll just use the last sender address we had.
+        // Grab the address of the sender
+        senderAddress = getDeviceAddress(loraMsg); 
+      }
+      
+      vTaskDelay(50 / portTICK_PERIOD_MS);  // TESTING: Give the counter a little bit to get ready for the ACK. 
+      
+      // Let the sender know we got the message.
+      DEBUG_PRINTLN("Sending ACK. ");
+      sendReceiveReyax("AT+SEND=" + senderAddress + ",3,ACK"); 
+    
       if (messageIsWellFormed(loraMsg)) {  // Looks like one of our messages. 
         
         DEBUG_PRINTLN("Message is well-formed.");
-        
-        //Messages received by the Module start with '+RCV'
-        if (loraMsg.indexOf("+RCV")>=0){
-          // Grab the address of the sender
-          String senderAddress = getDeviceAddress(loraMsg); 
-  
-          vTaskDelay(50 / portTICK_PERIOD_MS);  // TESTING: Give the counter a little bit to get ready for the ACK. 
-          
-          // Let the sender know we got the message.
-          DEBUG_PRINTLN("Sending ACK. ");
-          DEBUG_PRINTLN();
-          sendReceiveReyax("AT+SEND=" + senderAddress + ",3,ACK"); 
-          
           // Put the message we received on the queue to process
           xSemaphoreTake(mutex_v, portMAX_DELAY);      
-            loraMsgBuffer.push(loraMsg);
-          xSemaphoreGive(mutex_v);
-      
-        } else {
-          
-          DEBUG_PRINTLN(loraMsg);     
-           
-        } 
-                
+            String * msgPtr = new String(loraMsg);
+            loraMsgBuffer.push(msgPtr);
+          xSemaphoreGive(mutex_v);         
       }
     }
   }
